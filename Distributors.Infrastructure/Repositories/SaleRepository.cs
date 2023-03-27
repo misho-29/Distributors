@@ -22,8 +22,7 @@ public class SaleRepository : GenericRepository<SaleEntity>, ISaleRepository
 
     public async Task<IPagedList<SaleDto>> GetAsync(PaginationObj pagination, Filter? filter)
     {
-        return await Set.Include(sale => sale.Distributor).Include(sale => sale.Product)
-            .Select(sale => new SaleDto
+        return await Set.Select(sale => new SaleDto
             {
                 Distributor = new Distributor
                 {
