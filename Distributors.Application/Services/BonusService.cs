@@ -13,7 +13,6 @@ public class BonusService : IBonusService
     private readonly IUnitOfWork _unitOfWork;
     private readonly IConfiguration _configuration;
     private readonly IMapper _mapper;
-    private static readonly SemaphoreSlim _bonusCalculationLock = new(1, 1);
 
     public BonusService(IUnitOfWork unitOfWork, IConfiguration configuration, IMapper mapper)
     {
@@ -31,34 +30,26 @@ public class BonusService : IBonusService
 
     public async Task CalculateAsync(CalculateBonusRequest request)
     {
-        await _bonusCalculationLock.WaitAsync(); // Lock disables the same bonus calculations by multiple requests
-        try
+        var bonusRecommendationCoeffs = _configuration.GetSection("BonusRecommendationCoefficients").Get<List<decimal>>();
+        var depth = bonusRecommendationCoeffs.Count - 1;
+        var distributors = await _unitOfWork.Distributors.GetAllAsync();
+        var sales = await _unitOfWork.Sales.GetAsync(request.FromDate, request.ToDate);
+        foreach (var distributor in distributors)
         {
-            var bonusRecommendationCoeffs = _configuration.GetSection("BonusRecommendationCoefficients").Get<List<decimal>>();
-            var depth = bonusRecommendationCoeffs.Count - 1;
-            var distributors = await _unitOfWork.Distributors.GetAllAsync();
-            var sales = await _unitOfWork.Sales.GetAsync(request.FromDate, request.ToDate);
-            foreach (var distributor in distributors)
+            var salesTotalPrice = sales.Where(sale => sale.DistributorId == distributor.Id).Sum(sale => sale.TotalPrice);
+            var coeffIndex = 0;
+            distributor.BonusAmount += salesTotalPrice * bonusRecommendationCoeffs[coeffIndex];
+
+            var recommenders = await GetRecommendersAsync(distributor.Id, depth);
+            foreach (var recommender in recommenders)
             {
-                var salesTotalPrice = sales.Where(sale => sale.DistributorId == distributor.Id).Sum(sale => sale.TotalPrice);
-                var coeffIndex = 0;
-                distributor.BonusAmount += salesTotalPrice * bonusRecommendationCoeffs[coeffIndex];
-
-                var recommenders = await GetRecommendersAsync(distributor.Id, depth);
-                foreach (var recommender in recommenders)
-                {
-                    coeffIndex++;
-                    recommender.BonusAmount += salesTotalPrice * bonusRecommendationCoeffs[coeffIndex];
-                }
+                coeffIndex++;
+                recommender.BonusAmount += salesTotalPrice * bonusRecommendationCoeffs[coeffIndex];
             }
+        }
 
-            sales.ForEach(sale => sale.IsBonusCalculated = true);
-            await _unitOfWork.CompleteAsync();
-        }
-        finally
-        {
-            _bonusCalculationLock.Release();
-        }
+        sales.ForEach(sale => sale.IsBonusCalculated = true);
+        await _unitOfWork.CompleteAsync();
     }
 
     private async Task<List<DistributorEntity>> GetRecommendersAsync(string distributorId, int depth)
